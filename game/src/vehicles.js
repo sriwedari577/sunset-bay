@@ -1,104 +1,106 @@
-// Sunset Bay — one drivable vehicle: arcade physics, steering that bites
-// harder with speed, a handbrake that breaks the rear loose, and simple
-// collision against the town. Traffic, police and the player all drive
-// through this same class.
-import { makeCar } from './models.js';
-import { CAR } from './tuning.js';
-import { resolveWorld } from './town.js';
-import { clamp, TAU } from './util.js';
+// Cars: one arcade physics model shared by the player's ride, parked cars
+// and police cruisers. Forward is +Z rotated by `heading`.
+import * as THREE from 'three';
+import { T } from './tuning.js';
+import { clamp, collideCircle } from './util.js';
+import { makeCarMesh } from './models.js';
 
-export class Vehicle {
-  constructor(scene, opts = {}) {
-    this.rig = makeCar({ paint: opts.paint ?? 0xd84a3a, police: !!opts.police });
-    this.group = this.rig.group;
-    scene.add(this.group);
-    this.paint = opts.paint ?? 0xd84a3a;
-    this.police = !!opts.police;
-    this.x = opts.x ?? 0;
-    this.z = opts.z ?? 0;
-    this.yaw = opts.yaw ?? 0;
+const PALETTE = [0xb03030, 0x3050b0, 0xc0a030, 0x409050, 0x8050a0, 0xd0d0d0, 0x303840, 0xe07020];
+
+export class Car {
+  constructor(scene, x, z, heading, color, police = false) {
+    this.scene = scene;
+    this.police = police;
+    const built = makeCarMesh(police ? 0xe8e8e8 : color, police);
+    this.mesh = built.group;
+    this.wheels = built.wheels;
+    this.bar = built.bar;
+    this.mesh.position.set(x, 0, z);
+    this.mesh.rotation.y = heading;
+    scene.add(this.mesh);
+    this.x = x; this.z = z; this.heading = heading;
     this.speed = 0;
     this.steer = 0;
-    this.parked = opts.parked ?? false;
-    this.stolen = false;
+    this.color = color;
     this.dead = false;
-    this.crashed = false;
-    this.sync();
+    this.isCar = true;
+    this.sirenPhase = 0;
   }
 
-  place(x, z, yaw) {
-    this.x = x; this.z = z; this.yaw = yaw;
-    this.speed = 0;
-    this.sync();
-  }
+  get pos() { return this.mesh.position; }
 
-  // throttle: -1 (full reverse/brake) .. 1 (full throttle). steer: -1..1.
-  // Returns true when the body hit something solid this step.
-  drive(dt, throttle, steer, handbrake, town) {
-    this.crashed = false;
-    const grip = handbrake ? CAR.handbrakeGrip : CAR.grip;
-    if (throttle > 0) {
-      this.speed += CAR.accel * throttle * dt * (this.speed < 0 ? 2.2 : 1);
-    } else if (throttle < 0) {
-      if (this.speed > 0.5) this.speed += CAR.brake * throttle * dt;
-      else this.speed += CAR.accel * throttle * dt * 0.7;
+  // throttle: -1..1, steerInput: -1..1. Returns true if a wall was hit.
+  drive(throttle, steerInput, dt, colliders) {
+    const maxF = this.police ? T.copCarSpeed : T.carMaxSpeed;
+    if (throttle > 0) this.speed += T.carAccel * throttle * dt;
+    else if (throttle < 0) {
+      if (this.speed > 0.5) this.speed -= T.carBrake * dt;
+      else this.speed = Math.max(this.speed - T.carAccel * 0.55 * dt, -T.carMaxReverse);
+    } else {
+      this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), 9 * dt);
     }
-    // Rolling drag toward a stop.
-    const drag = Math.exp(-grip * 0.28 * dt);
-    if (throttle === 0) this.speed *= Math.pow(0.5, dt * 0.9);
-    else this.speed *= drag > 0.995 ? 1 : 1;
-    this.speed = clamp(this.speed, -CAR.reverseSpeed, CAR.maxSpeed);
-    if (Math.abs(this.speed) < 0.05 && throttle === 0) this.speed = 0;
-
+    this.speed = clamp(this.speed, -T.carMaxReverse, maxF);
     const spd = Math.abs(this.speed);
-    const steerAuthority = clamp(spd / 9, 0, 1) * (handbrake ? 1.5 : 1);
-    this.yaw += steer * CAR.turnRate * steerAuthority * dt * (this.speed >= 0 ? 1 : -1);
-    this.steer += (steer - this.steer) * Math.min(1, dt * 8);
-
-    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
-    const nx = this.x + fx * this.speed * dt;
-    const nz = this.z + fz * this.speed * dt;
-    const fixed = resolveWorld(nx, nz, CAR.radius, town);
-    if (Math.abs(fixed.x - nx) > 0.001 || Math.abs(fixed.z - nz) > 0.001) {
-      if (spd > 6) this.crashed = true;
-      this.speed *= 0.35;
+    // Arcade steering: some authority even at a crawl, so a cruiser (or
+    // Mara) can turn around without a ten-point shuffle.
+    const turnAuthority = clamp(0.3 + spd / 9, 0, 1) * (1 - clamp(spd / maxF, 0, 1) * 0.45);
+    this.steer = steerInput * T.carTurnRate * turnAuthority;
+    if (this.speed < -0.1) this.heading -= this.steer * dt;
+    else this.heading += this.steer * dt;
+    const nx = this.x + Math.sin(this.heading) * this.speed * dt;
+    const nz = this.z + Math.cos(this.heading) * this.speed * dt;
+    const solved = collideCircle(nx, nz, T.carRadius, colliders);
+    const hitWall = solved.hit && spd > 4;
+    if (solved.hit) this.speed *= 0.45;
+    this.x = solved.x; this.z = solved.z;
+    this.mesh.position.set(this.x, 0, this.z);
+    this.mesh.rotation.y = this.heading;
+    const spin = this.speed * dt / 0.42;
+    for (const w of this.wheels) w.rotation.x += spin;
+    if (this.bar) {
+      this.sirenPhase += dt * 9;
+      this.bar.visible = Math.sin(this.sirenPhase) > -0.2;
+      this.bar.children[0].visible = Math.sin(this.sirenPhase) > 0;
+      this.bar.children[1].visible = Math.sin(this.sirenPhase) <= 0;
     }
-    const moved = Math.hypot(fixed.x - this.x, fixed.z - this.z);
-    this.x = fixed.x; this.z = fixed.z;
-    this.sync();
-    this.rig.roll(this.speed * dt, this.steer);
-    return moved;
+    return hitWall;
   }
 
-  sync() {
-    this.group.position.set(this.x, 0, this.z);
-    this.group.rotation.y = this.yaw;
+  place(x, z, heading) {
+    this.x = x; this.z = z; this.heading = heading; this.speed = 0;
+    this.mesh.position.set(x, 0, z);
+    this.mesh.rotation.y = heading;
   }
 
-  get mph() { return Math.abs(this.speed) * 3.1; }
+  dispose() {
+    if (this.dead) return;
+    this.dead = true;
+    this.scene.remove(this.mesh);
+  }
 }
 
-// Keep a list of vehicles from overlapping: push circles apart and trade a
-// little speed, which reads as a fender-bender rather than a ghost pass.
-export function separateVehicles(list) {
-  for (let i = 0; i < list.length; i++) {
-    const a = list[i];
-    if (a.dead) continue;
-    for (let j = i + 1; j < list.length; j++) {
-      const b = list[j];
-      if (b.dead) continue;
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const d = Math.hypot(dx, dz);
-      const min = 3.4;
-      if (d > 0.001 && d < min) {
-        const push = (min - d) / 2;
-        const ux = dx / d, uz = dz / d;
-        a.x -= ux * push; a.z -= uz * push;
-        b.x += ux * push; b.z += uz * push;
-        const avg = (a.speed + b.speed) / 2;
-        a.speed = avg * 0.7; b.speed = avg * 0.7;
-        a.sync(); b.sync();
-      }
-    }
+export function carColor(rng) {
+  return PALETTE[Math.floor(rng() * PALETTE.length) % PALETTE.length];
+}
+
+// Parked cars along road edges, away from the pier approach.
+export function spawnParkedCars(scene, rng, colliders, count = 16) {
+  const cars = [];
+  const lines = [];
+  for (let c = -180; c <= 180; c += 60) lines.push(c);
+  let tries = 0;
+  while (cars.length < count && tries++ < 300) {
+    const horizontal = rng() < 0.5;
+    const line = lines[Math.floor(rng() * lines.length) % lines.length];
+    const along = -200 + rng() * 400;
+    const side = rng() < 0.5 ? -1 : 1;
+    const x = horizontal ? along : line + side * 7.5;
+    const z = horizontal ? line + side * 7.5 : along;
+    if (x > 145) continue;
+    if (Math.abs(x) < 12 && Math.abs(z) < 12) continue; // keep the crossroads clear
+    const heading = horizontal ? (side > 0 ? Math.PI / 2 : -Math.PI / 2) : (side > 0 ? 0 : Math.PI);
+    const car = new Car(scene, x, z, heading, carColor(rng));
+    cars.push(car);
   }
+  return cars;
 }

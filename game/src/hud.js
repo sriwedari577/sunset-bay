@@ -1,226 +1,172 @@
-// Sunset Bay — every DOM surface: the HUD readouts, the round minimap,
-// banners, toasts, dialog, and the menu screens (title, pause, jobs,
-// busted, wasted). The game logic never touches the DOM directly.
-import { fmtCash } from './util.js';
-
-function el(id) { return document.getElementById(id); }
+// All DOM: HUD readouts, the round minimap, dialogs, menus and the
+// busted / wasted overlays. Gameplay code calls these; nothing here
+// reaches into the 3D scene except through the state object passed in.
+import { T } from './tuning.js';
+import { ROAD_LINES } from './town.js';
+import { money } from './util.js';
 
 export class HUD {
-  constructor(town) {
-    this.town = town;
-    this.starsEl = el('stars');
-    this.cashEl = el('cash');
-    this.healthBar = el('healthBar');
-    this.healthFill = this.healthBar.querySelector('i');
-    this.map = el('minimap');
-    this.mapCtx = this.map.getContext('2d');
-    this.objectiveEl = el('objective');
-    this.hintEl = el('hint');
-    this.dialogEl = el('dialog');
-    this.dialogWho = this.dialogEl.querySelector('.who');
-    this.dialogLine = this.dialogEl.querySelector('.line');
-    this.speedEl = el('speed');
-    this.weaponEl = el('weapon');
-    this.crossEl = el('crosshair');
-    this.bannerEl = el('banner');
-    this.bannerBig = this.bannerEl.querySelector('.big');
-    this.bannerSub = this.bannerEl.querySelector('.sub');
-    this.vignetteEl = el('vignette');
-    this.toastEl = el('toast');
-    this.menuEl = el('menu');
-    this.panelEl = el('panel');
-    this.srEl = el('sr');
-    this.bannerUntil = 0;
-    this.toastUntil = 0;
-    this.menuOpen = false;
+  constructor() {
+    this.el = {};
+    for (const id of [
+      'hud', 'stars', 'cash', 'health-fill', 'health-text', 'speed', 'weapon',
+      'objective', 'prompt', 'messages', 'dialog', 'dialog-who', 'dialog-text',
+      'minimap', 'title', 'jobs', 'jobs-list', 'busted', 'wasted', 'vignette',
+      'center-label', 'toast',
+    ]) {
+      this.el[id] = document.getElementById(id);
+    }
+    this.msgTimers = [];
+    this.dialogQueue = [];
+    this.dialogTimer = null;
+    this.mapCtx = this.el.minimap ? this.el.minimap.getContext('2d') : null;
+    this.mapTimer = 0;
   }
 
-  showBanner(main, sub, seconds = 3) {
-    this.bannerBig.textContent = main;
-    this.bannerSub.textContent = sub || '';
-    this.bannerEl.style.display = 'block';
-    this.bannerUntil = performance.now() / 1000 + seconds;
+  setStats({ heat, cash, health, maxHealth, speed, weapon, ammo }) {
+    if (this.el.stars) {
+      this.el.stars.textContent = '★'.repeat(heat) + '☆'.repeat(Math.max(0, T.wantedMax - heat));
+      this.el.stars.className = heat > 0 ? 'hot' : '';
+    }
+    if (this.el.cash) this.el.cash.textContent = money(cash);
+    if (this.el['health-fill']) {
+      this.el['health-fill'].style.width = `${Math.max(0, (health / maxHealth) * 100)}%`;
+    }
+    if (this.el['health-text']) this.el['health-text'].textContent = `${Math.ceil(health)}`;
+    if (this.el.speed) this.el.speed.textContent = `${Math.abs(Math.round(speed * 2.4))} MPH`;
+    if (this.el.weapon) {
+      this.el.weapon.textContent = weapon === 'pistol' ? `PISTOL ${ammo}` : weapon.toUpperCase();
+    }
   }
 
-  showToast(text, seconds = 2.5) {
-    this.toastEl.textContent = text;
-    this.toastEl.style.display = 'block';
-    this.toastUntil = performance.now() / 1000 + seconds;
+  setObjective(text) {
+    if (this.el.objective) {
+      this.el.objective.textContent = text;
+      this.el.objective.style.display = text ? 'block' : 'none';
+    }
   }
 
-  setDialog(who, text) {
-    if (!who) { this.dialogEl.style.display = 'none'; return; }
-    this.dialogWho.textContent = who;
-    this.dialogLine.textContent = text;
-    this.dialogEl.style.display = 'block';
+  setPrompt(text) {
+    if (this.el.prompt) {
+      this.el.prompt.textContent = text;
+      this.el.prompt.style.display = text ? 'block' : 'none';
+    }
   }
 
-  drawMap(state) {
+  message(text, kind = 'info') {
+    if (!this.el.messages) return;
+    const div = document.createElement('div');
+    div.className = `msg ${kind}`;
+    div.textContent = text;
+    this.el.messages.appendChild(div);
+    while (this.el.messages.children.length > 4) this.el.messages.firstChild.remove();
+    setTimeout(() => { div.classList.add('fade'); setTimeout(() => div.remove(), 600); }, 4200);
+  }
+
+  showDialog(who, text) {
+    this.dialogQueue.push({ who, text });
+    if (!this.dialogTimer) this.nextDialog();
+  }
+
+  nextDialog() {
+    const d = this.dialogQueue.shift();
+    if (!d) {
+      if (this.el.dialog) this.el.dialog.style.display = 'none';
+      this.dialogTimer = null;
+      return;
+    }
+    if (this.el['dialog-who']) this.el['dialog-who'].textContent = d.who;
+    if (this.el['dialog-text']) this.el['dialog-text'].textContent = d.text;
+    if (this.el.dialog) this.el.dialog.style.display = 'block';
+    this.dialogTimer = setTimeout(() => { this.dialogTimer = null; this.nextDialog(); }, 3600);
+  }
+
+  advanceDialog() {
+    if (this.dialogTimer) {
+      clearTimeout(this.dialogTimer);
+      this.dialogTimer = null;
+      this.nextDialog();
+    }
+  }
+
+  clearDialogs() {
+    if (this.dialogTimer) clearTimeout(this.dialogTimer);
+    this.dialogTimer = null;
+    this.dialogQueue = [];
+    if (this.el.dialog) this.el.dialog.style.display = 'none';
+  }
+
+  drawMinimap(state) {
+    if (!this.mapCtx || !this.el.minimap) return;
     const ctx = this.mapCtx;
-    const S = this.map.width;
-    const scale = S / 480;
-    const toX = (x) => (x + 240) * scale;
-    const toY = (z) => (z + 240) * scale;
-    ctx.clearRect(0, 0, S, S);
-    ctx.fillStyle = '#274d33';
-    ctx.fillRect(0, 0, S, S);
-    // Sea along the bottom edge (south is +z on the map? world -z is sea:
-    // the map draws world -z at the top, so the sea is the top strip).
-    ctx.fillStyle = '#2e7f9e';
-    ctx.fillRect(0, 0, S, (240 + this.town.seaZ) * scale * -1 + S - S);
-    ctx.fillRect(0, 0, S, Math.max(0, (-240 - this.town.seaZ) * scale));
-    ctx.fillStyle = '#e8d49a';
-    ctx.fillRect(0, Math.max(0, (-240 - this.town.seaZ) * scale), S, Math.max(0, (this.town.seaZ - this.town.beachZ) * scale));
-    // Roads.
-    ctx.strokeStyle = '#565c64';
-    ctx.lineWidth = 4;
-    for (const line of this.town.roadLines) {
-      ctx.beginPath(); ctx.moveTo(toX(line), 0); ctx.lineTo(toX(line), S); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, toY(line)); ctx.lineTo(S, toY(line)); ctx.stroke();
-    }
-    const dot = (x, z, color, r) => {
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(toX(x), toY(z), r, 0, Math.PI * 2); ctx.fill();
-    };
-    // Mara's bar and the police station as fixed landmarks.
-    dot(this.town.landmarks.mara.x, this.town.landmarks.mara.z, '#ffd75e', 4);
-    dot(this.town.landmarks.station.x, this.town.landmarks.station.z, '#6aa8e0', 4);
-    if (state.marker) {
-      const mx = toX(state.marker.x), my = toY(state.marker.z);
-      const pulse = 5 + Math.sin(performance.now() / 200) * 1.5;
-      ctx.fillStyle = '#ffd75e';
-      ctx.beginPath();
-      ctx.moveTo(mx, my - pulse - 2); ctx.lineTo(mx + pulse, my); ctx.lineTo(mx, my + pulse + 2); ctx.lineTo(mx - pulse, my);
-      ctx.closePath(); ctx.fill();
-    }
-    for (const e of state.enemies || []) {
-      if (!e.dead) dot(e.x, e.z, '#ff5040', 3);
-    }
-    const flash = Math.floor(performance.now() / 300) % 2 === 0;
-    for (const p of state.police || []) {
-      dot(p.x, p.z, flash ? '#ff2a20' : '#2060ff', 3.5);
-    }
-    // The player: a white arrow pointing where they face.
+    const S = this.el.minimap.width;
+    const half = T.worldHalf;
+    const toMap = (v) => ((v + half) / (half * 2)) * S;
     ctx.save();
-    ctx.translate(toX(state.playerX), toY(state.playerZ));
-    ctx.rotate(Math.atan2(Math.sin(state.playerYaw), Math.cos(state.playerYaw)) + Math.PI);
-    // Map north is -z (up); the arrow is drawn pointing up then rotated.
-    ctx.rotate(Math.PI);
-    ctx.fillStyle = '#ffffff';
-    ctx.strokeStyle = '#101623';
-    ctx.lineWidth = 1.5;
+    ctx.clearRect(0, 0, S, S);
     ctx.beginPath();
-    ctx.moveTo(0, -7); ctx.lineTo(5, 5); ctx.lineTo(0, 2.5); ctx.lineTo(-5, 5);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.arc(S / 2, S / 2, S / 2 - 1, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = '#20262b';
+    ctx.fillRect(0, 0, S, S);
+    ctx.strokeStyle = '#4a545e';
+    ctx.lineWidth = 3;
+    for (const c of ROAD_LINES) {
+      ctx.beginPath(); ctx.moveTo(toMap(c), 0); ctx.lineTo(toMap(c), S); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, toMap(c)); ctx.lineTo(S, toMap(c)); ctx.stroke();
+    }
+    ctx.fillStyle = '#3f7fa8';
+    ctx.fillRect(toMap(206), 0, S - toMap(206), S);
+    const dot = (x, z, color, r = 3) => {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(toMap(x), toMap(z), r, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    if (state.beacon) dot(state.beacon.x, state.beacon.z, '#ffd23a', 4.5);
+    for (const s of state.stashes || []) if (!s.taken) dot(s.x, s.z, '#51d45a', 2.5);
+    for (const c of state.cops || []) dot(c.x, c.z, '#5a8ae2', 3.5);
+    for (const g of state.goons || []) dot(g.x, g.z, '#e24a3a', 3);
+    if (state.player) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(toMap(state.player.x), toMap(state.player.z), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(S / 2, S / 2, S / 2 - 1, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
-  update(state) {
-    const now = performance.now() / 1000;
-    const filled = '★'.repeat(state.stars);
-    const empty = '☆'.repeat(Math.max(0, 5 - state.stars));
-    this.starsEl.textContent = filled + empty;
-    this.starsEl.classList.toggle('hot', state.stars > 0);
-    this.cashEl.textContent = fmtCash(state.cash);
-    const hp = Math.max(0, Math.round(state.health));
-    this.healthFill.style.width = `${hp}%`;
-    this.healthBar.classList.toggle('low', hp <= 30);
-    this.objectiveEl.textContent = state.objective || '';
-    this.objectiveEl.style.display = state.objective ? 'block' : 'none';
-    this.hintEl.textContent = state.hint || '';
-    this.hintEl.style.display = state.hint ? 'block' : 'none';
-    this.speedEl.innerHTML = `${Math.round(state.speed)}<small> MPH</small>`;
-    this.weaponEl.textContent = state.weaponLabel || '';
-    this.crossEl.style.display = state.aiming ? 'block' : 'none';
-    this.vignetteEl.style.opacity = String(Math.min(0.85, state.hurt + (state.health < 30 ? 0.25 : 0)));
-    if (state.dialog) this.setDialog(state.dialog.who, state.dialog.text);
-    else this.setDialog(null);
-    if (this.bannerUntil && now > this.bannerUntil) { this.bannerEl.style.display = 'none'; this.bannerUntil = 0; }
-    if (this.toastUntil && now > this.toastUntil) { this.toastEl.style.display = 'none'; this.toastUntil = 0; }
-    if (state.announce) this.srEl.textContent = state.announce;
-    this.drawMap(state);
+  showTitle(show) { if (this.el.title) this.el.title.style.display = show ? 'flex' : 'none'; }
+  showJobs(show, missions, completed) {
+    if (!this.el.jobs) return;
+    this.el.jobs.style.display = show ? 'block' : 'none';
+    if (show && this.el['jobs-list']) {
+      this.el['jobs-list'].innerHTML = missions.map((m, i) =>
+        `<div class="job${completed.has(m.id) ? ' done' : ''}"><b>${i + 1}. ${m.name}</b> — ${m.desc} <span class="reward">$${m.reward}</span>${completed.has(m.id) ? ' ✓' : ''}</div>`
+      ).join('');
+    }
   }
-
-  // ---- Menus ----
-  open(html) {
-    this.panelEl.innerHTML = html;
-    this.menuEl.classList.remove('hidden');
-    this.menuOpen = true;
+  showBusted(show) { if (this.el.busted) this.el.busted.style.display = show ? 'flex' : 'none'; }
+  showWasted(show) { if (this.el.wasted) this.el.wasted.style.display = show ? 'flex' : 'none'; }
+  setVignette(amount) {
+    if (this.el.vignette) this.el.vignette.style.opacity = String(Math.max(0, Math.min(0.7, amount)));
   }
-
-  close() {
-    this.menuEl.classList.add('hidden');
-    this.menuOpen = false;
+  setCenterLabel(text) {
+    if (this.el['center-label']) {
+      this.el['center-label'].textContent = text;
+      this.el['center-label'].style.display = text ? 'block' : 'none';
+    }
   }
-
-  titleScreen(hasSave, onStart, onJobs, onMute, muted) {
-    this.open(`
-      <div class="kicker">WELCOME TO</div>
-      <h1 class="logo">SUNSET <span>BAY</span></h1>
-      <p class="tagline">Rook is new in town. Mara runs the bar, Kroll runs the
-      streets, and the whole Bay is up for grabs. Take jobs, steal cars,
-      dodge the police — and take the town for yourself.</p>
-      <div class="controls">
-        <div><b>W A S D</b> — walk / drive</div>
-        <div><b>Mouse</b> — look around</div>
-        <div><b>E</b> — steal / leave car</div>
-        <div><b>Space</b> — jump / handbrake</div>
-        <div><b>F / Click</b> — punch / shoot</div>
-        <div><b>Q</b> — swap fists / pistol</div>
-        <div><b>R</b> — reload &nbsp; <b>M</b> — jobs</div>
-        <div><b>P</b> — pause &nbsp; <b>N</b> — mute</div>
-      </div>
-      <button class="btn" id="mStart">${hasSave ? 'CONTINUE' : 'START'}</button>
-      <button class="btn ghost" id="mJobs">JOBS</button>
-      <button class="btn ghost" id="mMute">${muted ? 'UNMUTE' : 'MUTE'}</button>
-      <div id="menuFoot">An original game. No real city, no real people, no borrowed assets.</div>`);
-    el('mStart').addEventListener('click', onStart);
-    el('mJobs').addEventListener('click', onJobs);
-    el('mMute').addEventListener('click', onMute);
-  }
-
-  pauseScreen(onResume, onJobs, onTitle, onMute, muted) {
-    this.open(`
-      <div class="kicker">TAKING FIVE</div>
-      <h1 class="logo" style="font-size:44px">PAUSED</h1>
-      <p class="tagline">The Bay waits for no one. Well — just this once.</p>
-      <button class="btn" id="mResume">RESUME</button>
-      <button class="btn ghost" id="mJobs">JOBS</button>
-      <button class="btn ghost" id="mMute">${muted ? 'UNMUTE' : 'MUTE'}</button>
-      <button class="btn ghost" id="mTitle">SAVE &amp; TITLE</button>`);
-    el('mResume').addEventListener('click', onResume);
-    el('mJobs').addEventListener('click', onJobs);
-    el('mMute').addEventListener('click', onMute);
-    el('mTitle').addEventListener('click', onTitle);
-  }
-
-  jobsScreen(jobs, onStartJob, onBack) {
-    const rows = jobs.map((j) => `
-      <div class="job ${j.done ? 'done' : ''}" data-i="${j.index}">
-        <div class="jt">${j.done ? '✓ ' : ''}${j.title} — ${fmtCash(j.reward)}</div>
-        <div class="jd">${j.desc}${j.done ? ' — done' : j.active ? ' — in progress' : ''}</div>
-      </div>`).join('');
-    this.open(`
-      <div class="kicker">MARA'S JOBS</div>
-      <h1 class="logo" style="font-size:40px">JOB BOARD</h1>
-      <p class="tagline">Jobs run in order. Finish one to unlock the next.</p>
-      <div id="menuList" style="display:block">${rows}</div>
-      <button class="btn" id="mBack">BACK</button>`);
-    this.panelEl.querySelectorAll('.job').forEach((row) => {
-      row.addEventListener('click', () => onStartJob(Number(row.dataset.i)));
-    });
-    el('mBack').addEventListener('click', onBack);
-  }
-
-  endScreen(kind, fine, onRespawn) {
-    const busted = kind === 'busted';
-    this.open(`
-      <div class="kicker">${busted ? 'THE POLICE GOT YOU' : 'YOU GOT FLATTENED'}</div>
-      <h1 class="logo" style="font-size:48px">${busted ? 'BUSTED' : 'WASTED'}</h1>
-      <p class="tagline">${busted
-        ? `The officers walk you to the station, keep ${fmtCash(fine)} as a fine, and let you go at Mara's bar. The job you were on is over.`
-        : `You wake up outside Mara's bar, ${fmtCash(fine)} lighter, with the job you were on called off.`}</p>
-      <button class="btn" id="mRespawn">BACK ON THE STREET</button>`);
-    el('mRespawn').addEventListener('click', onRespawn);
+  toast(text) {
+    if (!this.el.toast) return;
+    this.el.toast.textContent = text;
+    this.el.toast.style.display = 'block';
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => { this.el.toast.style.display = 'none'; }, 2600);
   }
 }

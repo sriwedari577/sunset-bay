@@ -1,261 +1,253 @@
-// Sunset Bay — Mara's jobs: four story missions plus cash stashes hidden
-// around town. A mission is a short list of steps; each step is a place to
-// reach, a car to steal, heat to lose, or goons to beat. Mara talks the
-// player through it, and the HUD reads the current step from here.
+// Mara's work: four story missions, six fixed cash stashes, beacons and
+// dialogs. The manager never mutates a list another system is iterating:
+// goon checks use snapshots, and every update returns early the moment
+// Mara is down, so a goon killing her mid-loop ends the mission cleanly.
 import * as THREE from 'three';
-import { Enemy } from './fight.js';
-import { TOWN } from './town.js';
-import { MISSION_REWARDS, ECONOMY } from './tuning.js';
-import { makeRng, fmtCash, clamp } from './util.js';
+import { T } from './tuning.js';
+import { dist2d } from './util.js';
+import { makeBeaconMesh, makeStashMesh } from './models.js';
 
-const MARA = { x: -180, z: 36 };
-
-const MISSIONS = [
-  {
-    title: 'Errand for Mara',
-    desc: 'Pick up the package under the pier and bring it back to the bar.',
-    steps: [
-      { kind: 'goto', x: 60, z: -232, r: 5, text: 'Collect the package under the pier', dialog: ['MARA', 'Rook. Package stashed under the pier, south end. Walk it back to me — and keep it casual.'] },
-      { kind: 'goto', x: MARA.x, z: MARA.z, r: 6, text: 'Return to Mara\u2019s bar', dialog: ['MARA', 'That\u2019s the stuff. First job done, no heat. You\u2019ll do fine in this town.'] },
-    ],
-  },
-  {
-    title: 'Hot Wheels',
-    desc: 'Steal a car, shake the police, and park up north.',
-    steps: [
-      { kind: 'steal', text: 'Steal a car', dialog: ['MARA', 'Kroll\u2019s boys are watching my door. Take a car that isn\u2019t yours and make some noise somewhere else.'] },
-      { kind: 'heat', text: 'Get the police off your tail', dialog: ['MARA', 'You\u2019ve got stars now. Break line of sight and stay quiet until they give up.'] },
-      { kind: 'goto', x: 120, z: 160, r: 8, text: 'Park up at the north crossroads', dialog: ['MARA', 'Clean. Park it up north and walk away. Kroll will never know you were mine.'] },
-    ],
-  },
-  {
-    title: 'The Drop',
-    desc: 'Deliver the case to the east docks in 90 seconds. Kroll\u2019s crew is waiting.',
-    steps: [
-      { kind: 'goto', x: -40, z: -120, r: 8, text: 'Deliver the case to the east docks', time: 90, goons: 2, dialog: ['MARA', 'Ninety seconds, Rook. The case goes to the east docks — and Kroll sent company. Don\u2019t be late.'] },
-    ],
-  },
-  {
-    title: 'King of the Bay',
-    desc: 'Take the crossroads from Kroll\u2019s crew, grab the briefcase, and bring it home.',
-    steps: [
-      { kind: 'defeat', count: 4, at: { x: 0, z: 0 }, text: 'Clear the crossroads of Kroll\u2019s crew', dialog: ['MARA', 'This is it. The crossroads, four of his best. Take them down and the Bay hears about it.'] },
-      { kind: 'goto', x: 0, z: 0, r: 5, text: 'Grab the briefcase', dialog: ['VINCE KROLL', 'You think this town is yours, driver? Come and take it, then.'] },
-      { kind: 'goto', x: MARA.x, z: MARA.z, r: 6, text: 'Bring the briefcase to Mara', dialog: ['MARA', 'It\u2019s done. The Bay is ours tonight, Rook. Drinks are on the house — forever.'] },
-    ],
-  },
+const STASH_SPOTS = [
+  { x: 228, z: 0, label: 'Pier stash' },
+  { x: -150, z: -120, label: 'Suburb stash' },
+  { x: 60, z: 120, label: 'Midtown stash' },
+  { x: -60, z: 180, label: 'South stash' },
+  { x: 120, z: -180, label: 'North stash' },
+  { x: -180, z: 30, label: 'West stash' },
 ];
 
-export class MissionManager {
-  constructor(scene, town, rng, sounds, hooks) {
+const DIALOGS = {
+  m1: [
+    ['MARA', 'Kroll took my cut. His runner left a bag on the pier — I want it back.'],
+    ['LENNY', 'Pier’s quiet this time of day. Grab it fast, and don’t let the gulls see you smile.'],
+  ],
+  m2: [
+    ['MARA', 'A buyer wants a clean coupe, no questions. There’s one parked downtown with the keys in it.'],
+    ['LENNY', 'Bring it to the lockup on the south road. Try not to bring the whole precinct with you.'],
+  ],
+  m3: [
+    ['MARA', 'Package for the beach house. Seventy-five seconds, or the tide takes the deal.'],
+    ['LENNY', 'Drive like the rent is due, Mara. Because it is.'],
+  ],
+  m4: [
+    ['MARA', 'Kroll’s crew holds the crossroads. Tonight the Bay remembers whose name is on it.'],
+    ['LENNY', 'Five of them, Mara. Make it loud.'],
+  ],
+};
+
+export class Missions {
+  constructor(scene, game) {
     this.scene = scene;
-    this.town = town;
-    this.rng = rng;
-    this.sounds = sounds;
-    this.hooks = hooks; // { dialog(who,text), banner(main,sub), toast(text), reward(n), crime(n) }
-    this.completed = 0;
-    this.active = null; // { def, stepIndex, timer, hadHeat, kills }
-    this.enemies = [];
-    this.dialog = null; // { who, text, until }
-    this.objective = 'Visit Mara\u2019s bar and take a job (M)';
-    this.marker = null; // { x, z }
-    this.failed = false;
-
-    // The beacon: a tall light pillar plus a bobbing diamond over the target.
-    this.beacon = new THREE.Group();
-    const pillar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 0.9, 60, 10, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    pillar.position.y = 30;
-    const gem = new THREE.Mesh(
-      new THREE.OctahedronGeometry(1.1),
-      new THREE.MeshBasicMaterial({ color: 0xffd75e }),
-    );
-    gem.position.y = 7;
-    gem.name = 'gem';
-    this.beacon.add(pillar, gem);
-    this.beacon.visible = false;
-    scene.add(this.beacon);
-
-    // Cash stashes: glowing green octahedrons tucked by the kerbs. The
-    // first one is Mara's package under the pier — the target of job 1 —
-    // so the fixed spots keep the story and the collectibles consistent.
+    this.game = game;
+    this.completed = new Set();
+    this.active = null;
+    this.stepIndex = 0;
+    this.beacon = null;
+    this.beaconTarget = null; // {x, z} or a Car to follow
+    this.timer = 0;
+    this.targetCar = null;
     this.stashes = [];
-    const stashGeo = new THREE.OctahedronGeometry(0.55);
-    const stashMat = new THREE.MeshBasicMaterial({ color: 0x7ddf8a });
-    for (const [x, z] of TOWN.stashSpots.slice(0, ECONOMY.stashCount)) {
-      const mesh = new THREE.Mesh(stashGeo, stashMat);
-      mesh.position.set(x, 1.1, z);
-      scene.add(mesh);
-      this.stashes.push({ x, z, mesh, taken: false });
+    this.goonsToBeat = 0;
+    this.goonsBeaten = 0;
+    this.buildStashes();
+    this.loadProgress();
+  }
+
+  buildStashes() {
+    STASH_SPOTS.forEach((s, i) => {
+      const mesh = makeStashMesh();
+      mesh.position.set(s.x, 0, s.z);
+      this.scene.add(mesh);
+      this.stashes.push({ ...s, mesh, taken: false, value: T.stashValues[i] });
+    });
+  }
+
+  loadProgress() {
+    try {
+      const raw = localStorage.getItem('sunsetbay-missions');
+      if (raw) {
+        const done = JSON.parse(raw);
+        if (Array.isArray(done)) for (const id of done) this.completed.add(id);
+      }
+    } catch { /* private mode: progress just doesn't persist */ }
+  }
+
+  persist() {
+    try {
+      localStorage.setItem('sunsetbay-missions', JSON.stringify([...this.completed]));
+    } catch { /* ignore */ }
+  }
+
+  definitions() {
+    return [
+      { id: 'm1', name: 'Errand for Mara', reward: T.missionReward[0], desc: 'Collect the stash Kroll’s runner left on the pier.' },
+      { id: 'm2', name: 'Hot Wheels', reward: T.missionReward[1], desc: 'Steal the marked coupe downtown and deliver it to the lockup.' },
+      { id: 'm3', name: 'The Drop', reward: T.missionReward[2], desc: 'Pick up the package and reach the beach house in 75 seconds.' },
+      { id: 'm4', name: 'King of the Bay', reward: T.missionReward[3], desc: 'Clear Kroll’s crew from the crossroads.' },
+    ];
+  }
+
+  start(id) {
+    if (this.active) this.fail('Mission replaced.');
+    // Stale dialogs from the previous job must not linger and swallow
+    // the interact key while the new job's briefing plays.
+    this.game.hud.clearDialogs();
+    const p = this.game.player;
+    this.active = id;
+    this.stepIndex = 0;
+    this.timer = 0;
+    this.goonsBeaten = 0;
+    const dlg = DIALOGS[id] || [];
+    for (const [who, text] of dlg) this.game.hud.showDialog(who, text);
+    if (id === 'm1') {
+      this.setBeacon(this.game.town.places.pierStash);
+      this.game.hud.setObjective('Collect the pier stash');
+    } else if (id === 'm2') {
+      const cars = this.game.parkedCars.filter((c) => !c.dead && Math.abs(c.x) < 100 && Math.abs(c.z) < 100);
+      this.targetCar = cars[0] || this.game.parkedCars[0] || null;
+      if (this.targetCar) {
+        // The beacon follows the car itself, not a fixed point.
+        this.setBeacon(this.targetCar);
+        this.game.hud.setObjective('Steal the marked coupe');
+      } else {
+        this.fail('No car to steal.');
+      }
+    } else if (id === 'm3') {
+      this.setBeacon(this.game.town.places.maraBar);
+      this.game.hud.setObjective('Pick up the package at the bar');
+    } else if (id === 'm4') {
+      this.goonsToBeat = 5;
+      this.game.horde.spawn(6, 6, 5);
+      this.setBeacon(this.game.town.places.crossroads);
+      this.game.hud.setObjective('Clear the crossroads: 0 / 5 crew down');
     }
+    this.game.sound?.missionStart();
   }
 
-  listJobs() {
-    return MISSIONS.map((m, i) => ({
-      index: i, title: m.title, desc: m.desc,
-      done: i < this.completed,
-      active: this.active !== null && this.active.def === m,
-      reward: MISSION_REWARDS[i],
-    }));
+  setBeacon(at) {
+    this.clearBeacon();
+    this.beacon = makeBeaconMesh();
+    this.beacon.position.set(at.x, 0, at.z);
+    this.scene.add(this.beacon);
+    this.beaconTarget = at;
   }
 
-  startMission(i) {
-    if (this.active || i !== this.completed || i >= MISSIONS.length) return false;
-    const def = MISSIONS[i];
-    this.active = { def, index: i, stepIndex: 0, timer: 0, hadHeat: false, kills: 0 };
-    this.failed = false;
-    this.enterStep();
-    this.sounds.phone();
-    return true;
+  clearBeacon() {
+    if (this.beacon) { this.scene.remove(this.beacon); this.beacon = null; }
+    this.beaconTarget = null;
   }
 
-  enterStep() {
-    const step = this.active.def.steps[this.active.stepIndex];
-    this.active.timer = step.time || 0;
-    this.active.hadHeat = false;
-    this.active.kills = 0;
-    if (step.dialog) this.say(step.dialog[0], step.dialog[1]);
-    this.objective = step.text;
-    if (step.goons) this.spawnGoons(step.goons, step);
-    if (step.kind === 'defeat') this.spawnGoons(step.count, step);
-    this.updateMarker();
-  }
-
-  spawnGoons(n, step) {
-    const cx = step.at ? step.at.x : step.x;
-    const cz = step.at ? step.at.z : step.z;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + 0.5;
-      const e = new Enemy(this.scene, cx + Math.sin(a) * 9, cz + Math.cos(a) * 9, {
-        health: 60, speed: 4.8, damage: 9,
-      });
-      this.enemies.push(e);
-    }
-  }
-
-  say(who, text) {
-    this.dialog = { who, text, until: performance.now() / 1000 + 5 };
-    this.hooks.dialog(who, text);
-  }
-
-  failActive(reason) {
+  fail(reason) {
     if (!this.active) return;
-    this.hooks.banner('JOB FAILED', reason || 'Try again from the jobs menu (M)');
-    this.sounds.sting(false);
-    this.clearGoons();
     this.active = null;
-    this.marker = null;
-    this.beacon.visible = false;
-    this.objective = 'Visit Mara\u2019s bar and take a job (M)';
-    this.failed = true;
+    this.clearBeacon();
+    this.game.hud.setObjective('');
+    if (reason) this.game.hud.message(reason, 'bad');
   }
 
-  clearGoons() {
-    for (const e of this.enemies) e.remove();
-    this.enemies = [];
-  }
-
-  completeMission() {
-    const i = this.active.index;
-    const reward = MISSION_REWARDS[i];
-    this.completed = Math.max(this.completed, i + 1);
+  complete() {
+    const def = this.definitions().find((d) => d.id === this.active);
+    if (!def) return;
+    this.completed.add(def.id);
+    this.persist();
+    this.game.player.cash += def.reward;
+    this.game.hud.message(`Mission complete: ${def.name} (+$${def.reward})`, 'good');
+    this.game.sound?.missionDone();
     this.active = null;
-    this.marker = null;
-    this.beacon.visible = false;
-    this.clearGoons();
-    this.hooks.reward(reward);
-    this.sounds.sting(true);
-    if (this.completed >= MISSIONS.length) {
-      this.hooks.banner('SUNSET BAY IS YOURS', 'Every job done. Mara\u2019s bar stays open, and the town knows your name.');
-      this.objective = 'All jobs complete — free roam. Thanks for playing!';
-    } else {
-      this.hooks.banner('JOB COMPLETE', `${fmtCash(reward)} earned — next job is waiting at Mara\u2019s (M)`);
-      this.objective = 'Visit Mara\u2019s bar and take a job (M)';
+    this.stepIndex = 0;
+    this.clearBeacon();
+    this.game.hud.setObjective('');
+    this.game.save?.();
+  }
+
+  near(x, z, r) {
+    const p = this.game.player;
+    const px = p.inCar ? p.inCar.x : p.x;
+    const pz = p.inCar ? p.inCar.z : p.z;
+    return dist2d(px, pz, x, z) < r;
+  }
+
+  // Called by the main loop. Snapshot discipline: goon state is read
+  // through horde.alive() (a fresh array), and the very first thing this
+  // does after Mara dies is stop — nothing below runs on a dead player.
+  update(dt) {
+    if (this.beacon && this.beaconTarget) {
+      if (this.beaconTarget.isCar) {
+        this.beacon.position.set(this.beaconTarget.x, 0, this.beaconTarget.z);
+      }
+      this.beacon.rotation.y += dt * 0.8;
+      const s = 1 + Math.sin(performance.now() * 0.004) * 0.08;
+      this.beacon.scale.set(s, 1, s);
     }
-  }
+    const p = this.game.player;
+    if (!this.active || !p || p.dead) return;
 
-  advance() {
-    this.active.stepIndex += 1;
-    if (this.active.stepIndex >= this.active.def.steps.length) this.completeMission();
-    else this.enterStep();
-  }
-
-  updateMarker() {
-    const step = this.active ? this.active.def.steps[this.active.stepIndex] : null;
-    if (step && (step.kind === 'goto' || step.kind === 'defeat')) {
-      const p = step.kind === 'defeat' ? step.at : step;
-      this.marker = { x: p.x, z: p.z };
-      this.beacon.position.set(p.x, 0, p.z);
-      this.beacon.visible = true;
-    } else {
-      this.marker = null;
-      this.beacon.visible = false;
+    if (this.active === 'm1') {
+      const stash = this.stashes[0];
+      if (!stash.taken && this.near(stash.x, stash.z, 3.2)) this.collectStash(stash, true);
+    } else if (this.active === 'm2') {
+      if (this.stepIndex === 0 && this.targetCar && p.inCar === this.targetCar) {
+        this.stepIndex = 1;
+        this.setBeacon({ x: -30, z: 186 });
+        this.game.hud.setObjective('Deliver the coupe to the lockup');
+      } else if (this.stepIndex === 1 && !p.inCar && this.near(-30, 186, 8)) {
+        this.complete();
+      }
+    } else if (this.active === 'm3') {
+      if (this.stepIndex === 0 && this.near(this.game.town.places.maraBar.x, this.game.town.places.maraBar.z, 5)) {
+        this.stepIndex = 1;
+        this.timer = 75;
+        this.setBeacon(this.game.town.places.beachRoad);
+        this.game.hud.setObjective('Reach the beach house — 75s');
+      } else if (this.stepIndex === 1) {
+        this.timer -= dt;
+        this.game.hud.setObjective(`Reach the beach house — ${Math.max(0, Math.ceil(this.timer))}s`);
+        if (this.near(this.game.town.places.beachRoad.x, this.game.town.places.beachRoad.z, 9)) {
+          this.complete();
+        } else if (this.timer <= 0) {
+          this.fail('Too slow — the deal fell through.');
+        }
+      }
+    } else if (this.active === 'm4') {
+      // Count from a snapshot so a goon dying in this same frame (or
+      // Mara dying to the last goon) cannot disturb the iteration.
+      const aliveNow = this.game.horde.alive().length;
+      const beaten = this.goonsToBeat - aliveNow;
+      if (beaten !== this.goonsBeaten) {
+        this.goonsBeaten = beaten;
+        this.game.hud.setObjective(`Clear the crossroads: ${beaten} / ${this.goonsToBeat} crew down`);
+      }
+      if (aliveNow <= 0 && this.goonsToBeat > 0) this.complete();
     }
-  }
 
-  update(dt, ctx) {
-    // ctx: { playerX, playerZ, inCar, stolenCar, wantedLevel, onHitPlayer(dmg), time }
-    const now = performance.now() / 1000;
-    if (this.dialog && now > this.dialog.until) this.dialog = null;
-    this.beacon.children.forEach((c) => { if (c.name === 'gem') { c.rotation.y += dt * 2; c.position.y = 7 + Math.sin(now * 2.4) * 0.5; } });
-
-    for (const s of this.stashes) {
-      if (s.taken) continue;
-      s.mesh.rotation.y += dt * 1.6;
-      s.mesh.position.y = 1.1 + Math.sin(now * 2 + s.x) * 0.18;
-      if (!ctx.inCar && Math.hypot(ctx.playerX - s.x, ctx.playerZ - s.z) < 2.2) {
-        s.taken = true;
-        this.scene.remove(s.mesh);
-        this.hooks.reward(ECONOMY.stashValue);
-        this.hooks.toast(`Stash found: ${fmtCash(ECONOMY.stashValue)}`);
-        this.sounds.pickup();
+    // Free-roam stash pickups (any stash, any time).
+    for (const stash of [...this.stashes]) {
+      if (!stash.taken && this.near(stash.x, stash.z, 3.0)) {
+        this.collectStash(stash, false);
       }
     }
+  }
 
-    // Goons fight and fall; count the kills for defeat steps.
-    // Hold the list reference for the whole loop: a goon's hit can kill
-    // the player mid-loop, and endRun -> failActive -> clearGoons replaces
-    // this.enemies, so the live field must never be re-read inside it.
-    const enemies = this.enemies;
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      const e = enemies[i];
-      const wasDead = e.dead;
-      e.update(dt, { x: ctx.playerX, z: ctx.playerZ }, this.town, ctx.onHitPlayer);
-      if (this.enemies !== enemies) break; // mission failed mid-loop; goons cleared
-      if (e.dead && !wasDead) {
-        this.active && (this.active.kills += 1);
-        this.hooks.crime(8);
-      }
-    }
+  collectStash(stash, fromMission) {
+    if (stash.taken) return;
+    stash.taken = true;
+    this.scene.remove(stash.mesh);
+    this.game.player.cash += stash.value;
+    this.game.hud.message(`${stash.label}: +$${stash.value}`, 'good');
+    this.game.sound?.pickup();
+    if (fromMission && this.active === 'm1') this.complete();
+  }
 
-    if (!this.active) return;
-    const step = this.active.def.steps[this.active.stepIndex];
-    if (step.time) {
-      this.active.timer -= dt;
-      if (this.active.timer <= 0) { this.failActive('Out of time'); return; }
+  onPlayerDeath() {
+    // Mara went down mid-mission: end it quietly. No list is touched.
+    if (this.active) {
+      this.active = null;
+      this.clearBeacon();
+      this.game.hud.setObjective('');
     }
-    if (ctx.wantedLevel > 0) this.active.hadHeat = true;
-    const dTarget = step.x !== undefined ? Math.hypot(ctx.playerX - step.x, ctx.playerZ - step.z) : 1e9;
-    switch (step.kind) {
-      case 'goto':
-        // A step that names a stash only counts once the package is in hand.
-        if (step.stash !== undefined && !this.stashes[step.stash].taken) break;
-        if (dTarget < step.r) this.advance();
-        break;
-      case 'steal':
-        if (ctx.inCar && ctx.stolenCar) this.advance();
-        break;
-      case 'heat':
-        if (this.active.hadHeat && ctx.wantedLevel === 0) this.advance();
-        break;
-      case 'defeat':
-        if (this.active.kills >= step.count) this.advance();
-        break;
-      default:
-        break;
-    }
-    void clamp;
+  }
+
+  onGoonDown() {
+    // The count is recomputed from the snapshot in update(); nothing to do.
   }
 }

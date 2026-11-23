@@ -1,198 +1,142 @@
-// Sunset Bay — the wanted system and the police who answer it. Heat
-// rises with crimes and cools when nobody is watching; the level sets how
-// many cars and officers come, and officers on foot can make an arrest.
-import { Vehicle } from './vehicles.js';
-import { makePerson } from './models.js';
-import { POLICE } from './tuning.js';
-import { resolveWorld } from './town.js';
-import { clamp, turnToward, wrapAngle } from './util.js';
+// The wanted system: heat 0-5, police cruisers that spawn, pursue and
+// ram, and the busted flow when they corner Mara. All state changes go
+// through the game object so the HUD and missions stay in sync.
+import * as THREE from 'three';
+import { T } from './tuning.js';
+import { clamp, dist2d, angleTo, angleLerp } from './util.js';
+import { Car } from './vehicles.js';
 
-export class Wanted {
-  constructor() {
+export class Cops {
+  constructor(scene, game) {
+    this.scene = scene;
+    this.game = game;
     this.heat = 0;
-    this.level = 0;
-    this.unseenFor = 0;
+    this.cars = [];
+    this.bustTimer = 0;
+    this.decayTimer = 0;
+    this.spawnTimer = 0;
+    this.seenTimer = 0;
   }
+
+  get wanted() { return this.heat; }
 
   addHeat(n) {
-    this.heat = clamp(this.heat + n, 0, 100);
-    this.unseenFor = 0;
-    this.level = this.levelFromHeat();
+    if (n <= 0) return;
+    const before = this.heat;
+    this.heat = clamp(this.heat + n, 0, T.wantedMax);
+    if (this.heat > 0 && before === 0) {
+      this.decayTimer = 0;
+      this.game.hud?.message('The cops are onto you.', 'bad');
+      this.game.sound?.siren(true);
+    }
   }
 
-  levelFromHeat() {
-    if (this.heat >= 90) return 5;
-    if (this.heat >= 70) return 4;
-    if (this.heat >= 50) return 3;
-    if (this.heat >= 30) return 2;
-    if (this.heat >= 12) return 1;
-    return 0;
-  }
-
-  clear() {
+  clearHeat() {
     this.heat = 0;
-    this.level = 0;
-    this.unseenFor = 0;
-  }
-
-  update(dt, seen) {
-    if (seen) {
-      this.unseenFor = 0;
-    } else {
-      this.unseenFor += dt;
-      if (this.unseenFor > POLICE.decayDelay) {
-        this.heat = Math.max(0, this.heat - POLICE.decayStep * dt);
-        this.level = this.levelFromHeat();
-      }
-    }
-  }
-}
-
-export class Police {
-  constructor(scene, town, rng, sounds) {
-    this.scene = scene;
-    this.town = town;
-    this.rng = rng;
-    this.sounds = sounds;
+    this.bustTimer = 0;
+    for (const c of this.cars) c.dispose();
     this.cars = [];
-    this.officers = [];
-    this.flashT = 0;
-    this.arrestT = 0;
-    this.pinT = 0;
-    this.sirenOn = false;
+    this.game.sound?.siren(false);
   }
 
-  wantCars(level) {
-    if (level <= 0) return 0;
-    return Math.min(POLICE.maxCars, level + (level >= 4 ? 1 : 0));
+  desiredCars() {
+    if (this.heat <= 0) return 0;
+    return Math.min(T.maxCopCars, 1 + Math.floor(this.heat / 2));
   }
 
-  spawnCar(ctx) {
-    // Drop in on the nearest road, a little way off, facing the player.
-    const px = ctx.playerX, pz = ctx.playerZ;
-    let best = null, bestD = 1e9;
-    for (const line of this.town.roadLines) {
-      for (const d of [-POLICE.spawnDistance, POLICE.spawnDistance]) {
-        const cx = px + d, cz = line;
-        const dd = Math.hypot(cx - px, cz - pz);
-        if (dd < bestD) { best = { x: cx, z: cz }; bestD = dd; }
-        const cx2 = line, cz2 = pz + d;
-        const dd2 = Math.hypot(cx2 - px, cz2 - pz);
-        if (dd2 < bestD) { best = { x: cx2, z: cz2 }; bestD = dd2; }
-      }
+  spawnCop() {
+    const p = this.game.player;
+    const tx = p.inCar ? p.inCar.x : p.x;
+    const tz = p.inCar ? p.inCar.z : p.z;
+    // Spawn on a road point roughly spawn-distance away, clamped in town.
+    let bx = tx, bz = tz, tries = 0;
+    while (tries++ < 24) {
+      const a = Math.random() * Math.PI * 2;
+      bx = clamp(tx + Math.sin(a) * T.copSpawnDist, -225, 200);
+      bz = clamp(tz + Math.cos(a) * T.copSpawnDist, -225, 225);
+      const onRoadX = [-180, -120, -60, 0, 60, 120, 180].some((l) => Math.abs(bx - l) < 7);
+      const onRoadZ = [-180, -120, -60, 0, 60, 120, 180].some((l) => Math.abs(bz - l) < 7);
+      if (onRoadX || onRoadZ) break;
+      // Snap to the nearest road line so cruisers start on asphalt.
+      const snap = (v) => [-180, -120, -60, 0, 60, 120, 180].reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a);
+      if (Math.abs(bx - snap(bx)) < Math.abs(bz - snap(bz))) bx = snap(bx); else bz = snap(bz);
     }
-    const car = new Vehicle(this.scene, {
-      paint: 0x1e2a3a, police: true,
-      x: best.x, z: best.z, yaw: Math.atan2(px - best.x, pz - best.z),
-    });
-    car.speed = POLICE.carSpeed * 0.6;
+    const car = new Car(this.scene, bx, bz, angleTo(bx, bz, tx, tz), 0xe8e8e8, true);
     this.cars.push(car);
     return car;
   }
 
-  spawnOfficer(ctx) {
-    const a = this.rng.range(0, Math.PI * 2);
-    const d = this.rng.range(14, 22);
-    const x = ctx.playerX + Math.sin(a) * d;
-    const z = ctx.playerZ + Math.cos(a) * d;
-    const fixed = resolveWorld(x, z, 0.5, this.town);
-    const rig = makePerson({ shirt: 0x1e2a3a, pants: 0x1e2a3a, skin: this.rng.pick([0xc9a06a, 0x8a5a3a, 0xe8c09a]), cap: 0x141c28 });
-    this.scene.add(rig.group);
-    const off = { rig, x: fixed.x, z: fixed.z, yaw: 0, speed: POLICE.footSpeed, cool: 0 };
-    this.officers.push(off);
-    return off;
-  }
-
-  clearAll() {
-    for (const c of this.cars) this.scene.remove(c.group);
-    for (const o of this.officers) this.scene.remove(o.rig.group);
-    this.cars = [];
-    this.officers = [];
-    this.arrestT = 0;
-    this.pinT = 0;
-    this.sounds.siren(false);
-    this.sirenOn = false;
-  }
-
-  // Returns { seen, busted }.
-  update(dt, ctx, wanted) {
-    const level = wanted.level;
-    this.flashT += dt;
-    const flashing = Math.floor(this.flashT * 4) % 2 === 0;
-    for (const c of this.cars) c.rig.flash(flashing);
-
-    // Siren follows the chase.
-    const wantSiren = level > 0;
-    if (wantSiren !== this.sirenOn) { this.sounds.siren(wantSiren); this.sirenOn = wantSiren; }
-
-    // Match the fleet to the wanted level.
-    while (this.cars.length < this.wantCars(level)) this.spawnCar(ctx);
-    while (this.cars.length > this.wantCars(level)) {
-      const c = this.cars.pop();
-      this.scene.remove(c.group);
+  update(dt) {
+    const p = this.game.player;
+    if (!p || p.dead) {
+      // No pursuit while Mara is down; cruisers hold position.
+      for (const c of this.cars) c.drive(0, 0, dt, this.game.town.colliders);
+      return;
     }
-    const wantOfficers = !ctx.playerInCar && level >= 1 ? Math.min(3, level) : 0;
-    while (this.officers.length < wantOfficers) this.spawnOfficer(ctx);
-    while (this.officers.length > wantOfficers) {
-      const o = this.officers.pop();
-      this.scene.remove(o.rig.group);
-    }
+    const tx = p.inCar ? p.inCar.x : p.x;
+    const tz = p.inCar ? p.inCar.z : p.z;
+    const playerSpeed = p.inCar ? Math.abs(p.inCar.speed) : p.speed2d;
 
-    let seen = false;
-    // Pursuit cars: steer at the player, ram when close.
-    for (const car of this.cars) {
-      const dx = ctx.playerX - car.x, dz = ctx.playerZ - car.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < POLICE.sightRange) seen = true;
-      // Aim slightly ahead of a moving target.
-      const lead = clamp(dist / 30, 0, 1.2);
-      const tx = ctx.playerX + (ctx.playerVelX || 0) * lead;
-      const tz = ctx.playerZ + (ctx.playerVelZ || 0) * lead;
-      const want = Math.atan2(tx - car.x, tz - car.z);
-      const steer = clamp(wrapAngle(want - car.yaw) * 1.6, -1, 1);
-      const throttle = dist > 5 ? 1 : 0.35;
-      car.drive(dt, throttle, steer, false, this.town);
-      if (dist > 190) {
-        // Teleport the pursuit back in range instead of letting it trail off.
-        const a = this.rng.range(0, Math.PI * 2);
-        car.place(ctx.playerX + Math.sin(a) * POLICE.spawnDistance, ctx.playerZ + Math.cos(a) * POLICE.spawnDistance, Math.atan2(ctx.playerX - car.x, ctx.playerZ - car.z));
-        car.speed = POLICE.carSpeed * 0.6;
+    if (this.heat > 0) {
+      this.spawnTimer -= dt;
+      if (this.cars.length < this.desiredCars() && this.spawnTimer <= 0) {
+        this.spawnCop();
+        this.spawnTimer = 1.2;
       }
-      // Ramming contact: the main loop turns overlap into damage.
-      car.touching = dist < 3.6;
-    }
-
-    // Officers on foot close in and try to hold the player for an arrest.
-    let arresting = false;
-    for (const o of this.officers) {
-      const dx = ctx.playerX - o.x, dz = ctx.playerZ - o.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < POLICE.sightRange) seen = true;
-      o.cool = Math.max(0, o.cool - dt);
-      if (dist > POLICE.arrestRange) {
-        const want = Math.atan2(dx, dz);
-        o.yaw = turnToward(o.yaw, want, dt * 9);
-        const nx = o.x + Math.sin(o.yaw) * o.speed * dt;
-        const nz = o.z + Math.cos(o.yaw) * o.speed * dt;
-        const fixed = resolveWorld(nx, nz, 0.5, this.town);
-        o.x = fixed.x; o.z = fixed.z;
-        o.rig.stride(dt, o.speed);
-      } else {
-        arresting = true;
-        o.rig.stride(dt, 0.1);
+      // A cop with eyes on Mara resets the decay clock.
+      let seen = false;
+      for (const c of this.cars) {
+        if (dist2d(c.x, c.z, tx, tz) < 60) { seen = true; break; }
       }
-      o.rig.group.position.set(o.x, 0, o.z);
-      o.rig.group.rotation.y = o.yaw;
+      if (seen) { this.seenTimer = 0; this.decayTimer = 0; }
+      else {
+        this.seenTimer += dt;
+        this.decayTimer += dt;
+        if (this.decayTimer >= T.wantedDecayTime) {
+          this.heat = Math.max(0, this.heat - 1);
+          this.decayTimer = 0;
+          if (this.heat === 0) this.clearHeat();
+          else this.game.hud?.message('Heat is cooling off…', 'info');
+        }
+      }
     }
-    if (arresting && !ctx.playerInCar) this.arrestT += dt;
-    else this.arrestT = Math.max(0, this.arrestT - dt * 2);
 
-    // Pinned: boxed in by a police car while stopped.
-    const pinned = ctx.playerInCar && Math.abs(ctx.playerSpeed || 0) < 1.5 && this.cars.some((c) => Math.hypot(c.x - ctx.playerX, c.z - ctx.playerZ) < 4.5);
-    if (pinned) this.pinT += dt;
-    else this.pinT = Math.max(0, this.pinT - dt * 2);
+    let nearest = Infinity;
+    for (const c of this.cars) {
+      const d = dist2d(c.x, c.z, tx, tz);
+      nearest = Math.min(nearest, d);
+      // Pursuit steering: aim at Mara, lead slightly when she drives.
+      const lead = p.inCar ? 0.45 : 0;
+      const aimX = tx + (p.inCar ? Math.sin(p.inCar.heading) * p.inCar.speed * lead : 0);
+      const aimZ = tz + (p.inCar ? Math.cos(p.inCar.heading) * p.inCar.speed * lead : 0);
+      const want = angleTo(c.x, c.z, aimX, aimZ);
+      let diff = want - c.heading;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const steer = clamp(diff * 1.6, -1, 1);
+      // Speed control: cruise when far, creep when close, so a cruiser
+      // that corners Mara holds position instead of blowing past her.
+      const wantSpeed = clamp(d * 0.9, 0, T.copCarSpeed);
+      let throttle = 0;
+      if (c.speed < wantSpeed - 1) throttle = 1;
+      else if (c.speed > wantSpeed + 2) throttle = -0.8;
+      c.drive(throttle, steer, dt, this.game.town.colliders);
+      // Ramming contact shoves Mara's car and rattles the camera.
+      if (p.inCar && d < 4.2) {
+        p.inCar.speed *= 0.82;
+        this.game.shake = Math.min(0.5, (this.game.shake || 0) + 0.25);
+      }
+    }
 
-    const busted = this.arrestT >= POLICE.arrestTime || this.pinT >= 3;
-    return { seen, busted };
+    // Busted: cornered at low speed with a cruiser on top of her.
+    if (this.heat > 0 && nearest < (p.inCar ? T.bustRange : T.arrestRange) && playerSpeed < 3.5) {
+      this.bustTimer += dt;
+      if (this.bustTimer >= T.bustHoldTime) {
+        this.bustTimer = 0;
+        this.game.onBusted();
+      }
+    } else {
+      this.bustTimer = Math.max(0, this.bustTimer - dt * 2);
+    }
   }
 }
