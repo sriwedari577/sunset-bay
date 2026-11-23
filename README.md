@@ -1,67 +1,87 @@
-![gta6-01](https://make.fun/badge/gta6-01.svg)
-![rank](https://make.fun/badge/gta6-01/sriwedari577/sunset-bay/rank.svg)
-![reward](https://make.fun/badge/gta6-01/sriwedari577/sunset-bay/reward.svg)
+[![Sunset Bay](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
+[![Rank](https://make.fun/badge/gta6-01/sriwedari577/sunset-bay/rank.svg)](https://make.fun/bounty/gta6-01)
+[![Reward](https://make.fun/badge/gta6-01/sriwedari577/sunset-bay/reward.svg)](https://make.fun/bounty/gta6-01)
 
 # Sunset Bay
 
-An original open-world crime game in the spirit of GTA 6, built for the
-make.fun `gta6-01` bounty. Mara Voss is back in Sunset Bay — a sun-soaked
-coastal city with a downtown core, western suburbs and a beach, sea and
-pier in the east — and Kroll's crew holds the crossroads. Steal cars,
-dodge the precinct, run four story jobs for Lenny, collect hidden cash
-stashes, and take the Bay back.
+An original open-world crime game in the spirit of GTA 6, built for
+[make.fun's gta6-01 bounty](https://make.fun/bounty/gta6-01). Everything in
+it is the author's own: the city, the characters, the vehicles, the story,
+the art and the synthesized sound. No Rockstar Games names, logos,
+characters, maps or assets, and nothing borrowed from any commercial game.
 
-Everything is original: the city, the characters, the vehicles, the story
-and the art are procedural, built in code. Nothing is taken from Rockstar
-Games or any other commercial game. The game runs fully offline in desktop
-Chrome from static files — no network requests.
+You are Rook, new in Sunset Bay, a sun-soaked coastal city. Mara runs the
+bar on the west side; Vince Kroll runs the streets. Take Mara's jobs, steal
+cars, dodge the police, and take the town for yourself.
 
 ## Play
 
+Serve this directory and open the page, or open `game/index.html`
+directly — the game runs fully offline in a desktop browser:
+
 ```sh
 node serve.ts
-# then open http://localhost:8080
+# open http://localhost:8080
 ```
 
 | Key | Action |
-| --- | ------ |
+| --- | --- |
 | W A S D | Walk / drive |
-| Shift | Run |
-| E | Steal a car / get out |
-| F or Space | Punch |
-| Mouse click | Shoot the pistol |
-| J | Jobs menu |
-| 1–4 | Start a job from the jobs menu |
-| Enter | Start / continue |
+| Mouse | Look around (click to capture) |
+| E | Steal / leave a car |
+| Space | Jump on foot / handbrake in a car |
+| F / Click | Punch / shoot |
+| Q | Swap fists and pistol |
+| R | Reload |
+| M | Mara's job board |
+| P | Pause |
+| N | Mute |
 
-## The city
+## What's in the Bay
 
-- **480×480 procedural city** — downtown towers, low suburbs, beach, sea
-  and a wooden pier, all generated from a seed.
-- **Traffic and pedestrians** fill the road grid; police cruisers respond
-  to a 0–5 star wanted level with pursuit, ramming and arrests (busted).
-- **Combat** — fists, a hitscan pistol, and Kroll's brawlers, who chase and
-  swing. Getting beaten down means the wasted flow and a fresh start
-  downtown.
-- **HUD** — wanted stars, cash, health, speed, weapon and ammo, a round
-  minimap, objectives, dialogs and messages.
-- **Four story missions** — *Errand for Mara* (pier stash), *Hot Wheels*
-  (steal and deliver a coupe), *The Drop* (a 75-second delivery) and
-  *King of the Bay* (clear the crossroads) — plus six fixed cash stashes.
-- **Synthesized sound** — WebAudio gunshots, sirens, pickups and mission
-  stingers. No audio files.
-- **Save** — cash, health, position, finished jobs and collected stashes
-  persist in `localStorage`.
+- **A city on foot and by car** — a procedural grid of streets, towers,
+  parks, car parks, a beach, a pier and the sea, all generated from a
+  seed. Walk anywhere; drive anything.
+- **Traffic and pedestrians** — cars follow the road grid and turn at
+  intersections; pedestrians stroll the sidewalks and run when a car
+  bears down on them.
+- **Stealing cars** — parked cars and traffic cars are all fair game.
+  Stealing one draws police attention.
+- **Wanted level and police** — five stars of heat. Patrol cars pursue
+  and ram; officers on foot close in and make arrests. Break line of
+  sight and the heat cools off.
+- **Missions and a story** — four jobs from Mara, with objectives,
+  dialogs, a timed delivery, goons to beat, and a finale at the plaza.
+  Cash stashes are hidden around town.
+- **Combat** — fists and a pistol, with enemy crew who fight back.
+- **HUD with a minimap** — wanted stars, cash, health, speed, weapon,
+  objective tracker, and a round minimap with police, markers and
+  mission beacons.
+- **Start screen and save** — progress (cash, jobs done, stashes found,
+  position) is kept in localStorage; continue from the title screen.
+- **Sound** — every sound is synthesized live with WebAudio: engine hum,
+  sirens, shots, pickups and a sunset groove. No audio files.
 
-## Staging
+## Structure
 
-`?shot=1` chase cover, `?shot=2` pier and sea, `?shot=3` suburb street
-with traffic and pedestrians, `?shot=4` the crossroads mission frame.
-`?test=1` exposes `window.__game` for scripted probes.
+- `game/index.html` — the page, HUD and menus.
+- `game/src/main.js` — boot and the game loop.
+- `game/src/town.js` — the procedural city, roads and collision.
+- `game/src/models.js` — people and car meshes.
+- `game/src/player.js` — walking, driving and the camera.
+- `game/src/vehicles.js` — shared arcade car physics.
+- `game/src/traffic.js` — traffic cars, pedestrians, parked cars.
+- `game/src/cops.js` — wanted heat, pursuit cars and officers.
+- `game/src/fight.js` — fists, pistol, enemy brawlers.
+- `game/src/jobs.js` — Mara's missions, stashes and beacons.
+- `game/src/hud.js` — HUD, minimap and menu screens.
+- `game/src/controls.js`, `game/src/sound.js`, `game/src/save.js`,
+  `game/src/tuning.js`, `game/src/util.js` — input, synth audio,
+  saving, tuning numbers and shared helpers.
+- `game/vendor/three.module.min.js` — three.js r160, vendored.
+- `main.ts` — copies `game/` and `screenshots/` to `/output` and writes
+  `dossier.json` with the vendored make.fun library.
 
-## Build
+## License
 
-`node main.ts` copies `game/` and `screenshots/` to `/output` and writes
-`/output/dossier.json` with the vendored make.fun library
-(`vendor/makefun-game.ts`). Three.js r160 is vendored as
-`game/vendor/three.module.min.js`.
+MIT. See [LICENSE](LICENSE).
