@@ -1,100 +1,115 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sunset Bay — open-world crime game</title>
+<link rel="icon" href="data:,">
+<title>Sunset Bay — an open-world crime game</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #101623; }
-  body { font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif; color: #f5eedd; }
-  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-
-  /* ---- HUD frame ---- */
-  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
-  .hud-tl { position: absolute; top: 14px; left: 16px; text-shadow: 0 2px 5px rgba(0,0,0,.8); }
-  #stars { font-size: 24px; letter-spacing: 5px; color: #ffd75e; line-height: 1; }
-  #stars.hot { animation: blink .8s steps(2, start) infinite; }
-  @keyframes blink { 50% { opacity: .35; } }
-  #cash { font-size: 24px; font-weight: 900; color: #8fe38a; margin-top: 4px; }
-  .bar { width: 200px; height: 11px; margin-top: 7px; border: 1px solid rgba(255,255,255,.45); border-radius: 6px; background: rgba(0,0,0,.5); overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #3fae5c, #8fe38a); }
-  .bar.low > i { background: linear-gradient(90deg, #c23b2a, #ff8a5c); }
-  .bar-label { font-size: 11px; letter-spacing: 2px; font-weight: 700; color: rgba(255,255,255,.75); margin-top: 3px; }
-
-  .hud-tr { position: absolute; top: 14px; right: 16px; text-align: center; }
-  #minimap { border-radius: 50%; border: 2px solid rgba(255,255,255,.55); background: rgba(10,18,26,.62); box-shadow: 0 4px 16px rgba(0,0,0,.55); }
-  .hud-tr .north { font-weight: 900; font-size: 12px; color: #fff; text-shadow: 0 1px 3px #000; margin-bottom: 1px; }
-
-  #objective { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%); max-width: 80vw; text-align: center; font-size: 18px; font-weight: 700; padding: 8px 20px; border-radius: 999px; background: rgba(8,14,22,.66); border: 1px solid rgba(255,215,94,.6); text-shadow: 0 1px 4px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #hint { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); font-size: 14px; font-weight: 600; padding: 5px 14px; border-radius: 999px; background: rgba(8,14,22,.55); white-space: nowrap; }
-  #dialog { position: absolute; left: 16px; bottom: 16px; max-width: 440px; background: rgba(8,14,22,.8); border-left: 4px solid #ffd75e; border-radius: 8px; padding: 11px 15px; display: none; }
-  #dialog .who { font-size: 12px; font-weight: 900; letter-spacing: 3px; color: #ffd75e; }
-  #dialog .line { font-size: 16px; line-height: 1.4; margin-top: 2px; }
-  .hud-br { position: absolute; right: 16px; bottom: 16px; text-align: right; text-shadow: 0 2px 5px rgba(0,0,0,.8); }
-  #speed { font-size: 30px; font-weight: 900; }
-  #speed small { font-size: 13px; font-weight: 700; color: rgba(255,255,255,.7); }
-  #weapon { font-size: 14px; font-weight: 800; letter-spacing: 2px; color: #ffd75e; margin-top: 2px; }
-  #crosshair { position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border: 2px solid rgba(255,255,255,.95); border-radius: 50%; box-shadow: 0 0 5px #000; display: none; }
-  #banner { position: absolute; left: 0; right: 0; top: 15%; text-align: center; text-shadow: 0 3px 12px #000; display: none; }
-  #banner .big { font-size: 42px; font-weight: 900; letter-spacing: 7px; color: #ffd75e; }
-  #banner .sub { font-size: 18px; font-weight: 700; margin-top: 4px; }
-  #vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 58%, rgba(190,20,20,.8) 100%); opacity: 0; }
-  #toast { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); font-size: 16px; font-weight: 800; letter-spacing: 1px; padding: 7px 18px; border-radius: 999px; background: rgba(8,14,22,.7); border: 1px solid rgba(255,255,255,.3); display: none; white-space: nowrap; }
-
-  /* ---- Menus ---- */
-  #menu { position: fixed; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg, rgba(10,16,28,.42), rgba(10,16,28,.72)); }
-  #menu.hidden { display: none; }
-  .panel { width: min(660px, 92vw); background: rgba(11,17,27,.94); border: 1px solid rgba(255,215,94,.55); border-radius: 18px; padding: 30px 38px 26px; text-align: center; box-shadow: 0 24px 70px rgba(0,0,0,.65); }
-  .kicker { font-size: 12px; font-weight: 900; letter-spacing: 5px; color: #ffd75e; }
-  h1.logo { margin: 8px 0 4px; font-size: 56px; letter-spacing: 9px; font-weight: 900; color: #f5eedd; text-shadow: 0 4px 0 #c25a2a, 0 10px 26px rgba(0,0,0,.6); }
-  h1.logo span { color: #ffd75e; }
-  .tagline { font-size: 16px; line-height: 1.5; color: #cfc8b8; }
-  .controls { margin: 18px auto 4px; font-size: 13.5px; line-height: 1.8; color: #9db2c6; columns: 2; column-gap: 28px; text-align: left; max-width: 520px; }
-  .controls b { color: #f5eedd; }
-  .btn { pointer-events: auto; cursor: pointer; margin: 16px 5px 0; padding: 12px 24px; font: inherit; font-size: 16px; font-weight: 900; letter-spacing: 1px; color: #16222f; background: linear-gradient(180deg, #ffe98a, #efa93c); border: none; border-radius: 10px; box-shadow: 0 4px 0 #a86a1e; }
-  .btn:active { transform: translateY(3px); box-shadow: none; }
-  .btn.ghost { background: transparent; color: #f5eedd; box-shadow: none; border: 1px solid rgba(255,255,255,.4); }
-  #menuList { text-align: left; margin: 14px auto 0; max-width: 520px; display: none; }
-  #menuList .job { pointer-events: auto; cursor: pointer; padding: 10px 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 10px; margin-top: 8px; background: rgba(255,255,255,.04); }
-  #menuList .job:hover { border-color: #ffd75e; }
-  #menuList .job.done { opacity: .55; }
-  #menuList .job .jt { font-weight: 900; }
-  #menuList .job .jd { font-size: 13px; color: #b9c2cc; margin-top: 2px; }
-  #menuFoot { margin-top: 16px; font-size: 12.5px; color: #8fa2b4; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0f12; font-family: "Segoe UI", Verdana, sans-serif; color: #fff; }
+  #app, #app canvas { position: fixed; inset: 0; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 30; }
+  /* HUD */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #stats { position: absolute; top: 16px; right: 18px; text-align: right; text-shadow: 0 1px 3px #000; }
+  #stars { font-size: 26px; letter-spacing: 3px; color: #888; }
+  #stars.hot { color: #ffd23a; }
+  #cash { font-size: 30px; font-weight: 800; color: #7de87d; }
+  #health-wrap { margin-top: 6px; width: 190px; height: 12px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.5); display: inline-block; }
+  #health-fill { height: 100%; width: 100%; background: #e24a3a; }
+  #health-text { font-size: 13px; margin-left: 6px; }
+  #speed { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  #weapon { font-size: 14px; letter-spacing: 1px; opacity: .9; }
+  #objective { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.62); border: 1px solid rgba(255,255,255,.35); padding: 8px 18px; border-radius: 20px; font-size: 16px; font-weight: 600; display: none; max-width: 80vw; text-align: center; }
+  #prompt { position: absolute; bottom: 118px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 8px; font-size: 15px; display: none; }
+  #messages { position: absolute; left: 18px; bottom: 170px; display: flex; flex-direction: column; gap: 6px; max-width: 340px; }
+  .msg { background: rgba(0,0,0,.62); padding: 7px 12px; border-radius: 6px; font-size: 14px; border-left: 4px solid #888; transition: opacity .6s; }
+  .msg.good { border-left-color: #51d45a; }
+  .msg.bad { border-left-color: #e24a3a; }
+  .msg.fade { opacity: 0; }
+  #dialog { position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); width: min(620px, 88vw); background: rgba(8,10,14,.82); border: 1px solid rgba(255,255,255,.3); border-radius: 10px; padding: 12px 18px; display: none; }
+  #dialog-who { color: #ffd23a; font-weight: 800; letter-spacing: 1px; font-size: 13px; }
+  #dialog-text { font-size: 16px; line-height: 1.45; margin-top: 3px; }
+  #minimap { position: absolute; right: 18px; bottom: 18px; width: 150px; height: 150px; border-radius: 50%; background: #20262b; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 9; opacity: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(200,20,10,.85) 100%); }
+  #center-label { position: absolute; top: 34%; left: 50%; transform: translateX(-50%); font-size: 34px; font-weight: 800; letter-spacing: 2px; text-shadow: 0 2px 8px #000; display: none; }
+  #toast { position: absolute; bottom: 200px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.7); padding: 8px 16px; border-radius: 8px; font-size: 15px; display: none; }
+  /* Title / overlays */
+  .panel { background: rgba(8,10,14,.86); border: 1px solid rgba(255,255,255,.25); border-radius: 14px; padding: 34px 44px; text-align: center; max-width: min(640px, 92vw); }
+  .panel h1 { font-size: 52px; letter-spacing: 3px; color: #ffd23a; text-shadow: 0 3px 0 #7a4a00, 0 6px 18px #000; }
+  .panel h2 { font-size: 15px; letter-spacing: 4px; color: #9fc4d4; margin: 6px 0 18px; font-weight: 600; }
+  .panel p { font-size: 15px; line-height: 1.6; color: #d8d8d8; }
+  .controls { text-align: left; display: inline-block; margin: 16px 0 4px; font-size: 14px; line-height: 1.8; color: #cfcfcf; }
+  .controls b { color: #fff; background: #333; border: 1px solid #666; border-radius: 4px; padding: 1px 7px; font-size: 13px; }
+  button { pointer-events: auto; cursor: pointer; margin-top: 20px; font-size: 18px; font-weight: 800; letter-spacing: 1px; color: #141414; background: #ffd23a; border: none; border-radius: 9px; padding: 13px 34px; }
+  button:hover { background: #ffdd66; }
+  #busted h1 { color: #5a8ae2; }
+  #wasted h1 { color: #e24a3a; }
+  /* Jobs menu */
+  #jobs { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(600px, 92vw); background: rgba(8,10,14,.92); border: 1px solid rgba(255,255,255,.3); border-radius: 12px; padding: 22px 26px; z-index: 25; display: none; }
+  #jobs h2 { color: #ffd23a; letter-spacing: 2px; margin-bottom: 10px; }
+  .job { padding: 9px 6px; border-bottom: 1px solid rgba(255,255,255,.14); font-size: 15px; line-height: 1.45; }
+  .job .reward { color: #7de87d; font-weight: 700; }
+  .job.done { opacity: .6; }
+  #jobs .hint { margin-top: 12px; font-size: 13px; color: #aaa; }
 </style>
 <script type="importmap">
   { "imports": { "three": "./vendor/three.module.min.js" } }
 </script>
 </head>
 <body>
-<canvas id="scene" aria-label="Sunset Bay, an open-world crime game. Explore the city on foot and by car, take jobs from Mara, and shake the police."></canvas>
+<div id="app"></div>
+<div id="vignette"></div>
+
 <div id="hud">
-  <div class="hud-tl">
+  <div id="stats">
     <div id="stars">☆☆☆☆☆</div>
-    <div id="cash">$120</div>
-    <div class="bar" id="healthBar"><i style="width:100%"></i></div>
-    <div class="bar-label">HEALTH</div>
-  </div>
-  <div class="hud-tr">
-    <div class="north">N</div>
-    <canvas id="minimap" width="168" height="168"></canvas>
+    <div id="cash">$520</div>
+    <div><span id="health-wrap"><span id="health-fill"></span></span><span id="health-text">100</span></div>
+    <div id="speed">0 MPH</div>
+    <div id="weapon">PISTOL 24</div>
   </div>
   <div id="objective"></div>
-  <div id="hint"></div>
-  <div id="dialog"><div class="who"></div><div class="line"></div></div>
-  <div class="hud-br">
-    <div id="speed">0<small> MPH</small></div>
-    <div id="weapon">FISTS</div>
-  </div>
-  <div id="crosshair"></div>
-  <div id="banner"><div class="big"></div><div class="sub"></div></div>
-  <div id="vignette"></div>
+  <div id="prompt"></div>
+  <div id="messages"></div>
+  <div id="dialog"><div id="dialog-who"></div><div id="dialog-text"></div></div>
+  <canvas id="minimap" width="150" height="150"></canvas>
+  <div id="center-label"></div>
   <div id="toast"></div>
 </div>
-<p id="sr" role="status" aria-live="polite"></p>
-<div id="menu"><div class="panel" id="panel"></div></div>
+
+<div id="title" class="overlay">
+  <div class="panel">
+    <h1>SUNSET BAY</h1>
+    <h2>A SUN-SOAKED CITY OF CARS, COPS &amp; CREWS</h2>
+    <p>Mara Voss is back in Sunset Bay, and Kroll's crew holds the crossroads.
+       Steal cars, dodge the precinct, run four story jobs for Lenny, and take
+       the Bay back — on foot or behind the wheel.</p>
+    <div class="controls">
+      <b>W A S D</b> move / drive &nbsp; <b>Shift</b> run<br>
+      <b>E</b> steal / exit car &nbsp; <b>F</b> punch &nbsp; <b>Click</b> shoot<br>
+      <b>J</b> jobs menu &nbsp; <b>1–4</b> start a job &nbsp; <b>Enter</b> start
+    </div>
+    <br>
+    <button id="start-btn">START ENGINE</button>
+  </div>
+</div>
+
+<div id="jobs">
+  <h2>JOBS — LENNY'S BOARD</h2>
+  <div id="jobs-list"></div>
+  <div class="hint">Press 1–4 to start a job, J to close. One job at a time.</div>
+  <button id="jobs-close">CLOSE</button>
+</div>
+
+<div id="busted" class="overlay" style="display:none">
+  <div class="panel"><h1>BUSTED</h1><p>The precinct caught up with Mara. A fine was taken from her cash.</p><button id="resume-btn">BACK TO THE BAY</button></div>
+</div>
+<div id="wasted" class="overlay" style="display:none">
+  <div class="panel"><h1>WASTED</h1><p>Mara went down. The Bay is patient — she wakes up downtown, ready to go again.</p><button id="resume-btn2">GET UP</button></div>
+</div>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
